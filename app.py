@@ -5,7 +5,8 @@ from PIL import Image
 import os
 import io
 import pandas as pd
-from utils.ocr import qr_code_detection, OCR_img
+from utils.ocr import qr_code_detection, OCR_img, OCR_with_detection
+from utils.model_inference import get_model, get_class
 
 def parse_qr_result(qr_string):
     """
@@ -205,9 +206,17 @@ def convert_pil_to_opencv(pil_image):
         return opencv_image
     return None
 
-def process_images_from_source(front_source, back_source, cccd_type):
+def process_images_from_source(front_source, back_source, cccd_type, ocr_method="OCR trực tiếp", detection_model=None, class_names=None):
     """
     Xử lý ảnh từ nhiều nguồn khác nhau (upload file hoặc camera)
+    
+    Parameters:
+        front_source: Nguồn ảnh mặt trước (file upload hoặc PIL Image)
+        back_source: Nguồn ảnh mặt sau (file upload hoặc PIL Image)
+        cccd_type: Loại CCCD ("CCCD Mới" hoặc "CCCD Cũ")
+        ocr_method: Phương thức OCR ("OCR trực tiếp" hoặc "Object Detection + OCR")
+        detection_model: Model YOLO cho object detection (nếu dùng)
+        class_names: List các class names (nếu dùng object detection)
     """
     results = {}
     front_img = None
@@ -271,12 +280,54 @@ def process_images_from_source(front_source, back_source, cccd_type):
                 results['qr_code'] = None
                 
                 if front_img is not None:
-                    st.info("🔍 Đang thực hiện OCR...")
-                    ocr_result = OCR_img(front_img)
-                    results['ocr_text'] = ocr_result
-                    
-                    st.success("✅ Hoàn thành OCR!")
-                    st.text_area("Kết quả OCR:", '\n'.join(ocr_result), height=200)
+                    # Kiểm tra phương thức OCR
+                    if ocr_method == "Object Detection + OCR" and detection_model is not None:
+                        st.info("🔍 Đang thực hiện Object Detection + OCR...")
+                        try:
+                            detected_info, img_with_boxes = OCR_with_detection(
+                                front_img, 
+                                detection_model, 
+                                class_names
+                            )
+                            results['detected_info'] = detected_info
+                            
+                            st.success("✅ Hoàn thành Object Detection + OCR!")
+                            
+                            # Hiển thị kết quả theo từng trường
+                            st.markdown("### 📋 Thông tin đã trích xuất:")
+                            
+                            # Tạo 2 cột để hiển thị thông tin
+                            col_left, col_right = st.columns(2)
+                            
+                            with col_left:
+                                for i, (field_name, text_value) in enumerate(detected_info.items()):
+                                    if i % 2 == 0:
+                                        st.markdown(f"**{field_name}:** {text_value}")
+                            
+                            with col_right:
+                                for i, (field_name, text_value) in enumerate(detected_info.items()):
+                                    if i % 2 == 1:
+                                        st.markdown(f"**{field_name}:** {text_value}")
+                            
+                            # Hiển thị bảng thông tin
+                            st.markdown("---")
+                            df_data = [{'Trường thông tin': k, 'Giá trị': v} for k, v in detected_info.items()]
+                            if df_data:
+                                df = pd.DataFrame(df_data)
+                                st.dataframe(df, use_container_width=True, hide_index=True)
+                        except ValueError as ve:
+                            # Lỗi validation - hiển thị hướng dẫn
+                            st.error(str(ve))
+                        except Exception as e:
+                            st.error(f"❌ Lỗi khi thực hiện Object Detection: {e}")
+                            st.warning("💡 Vui lòng thử lại hoặc chọn 'OCR trực tiếp'")
+                    else:
+                        st.info("🔍 Đang thực hiện OCR...")
+                        ocr_result = OCR_img(front_img)
+                        results['ocr_text'] = ocr_result
+                        
+                        st.success("✅ Hoàn thành OCR!")
+                        st.text_area("Kết quả OCR:", '\n'.join(ocr_result), height=200)
                 else:
                     st.error("❌ Cần ảnh mặt trước để thực hiện OCR!")
         else:
@@ -323,12 +374,41 @@ def process_images_from_source(front_source, back_source, cccd_type):
                 results['qr_code'] = None
                 
                 # Thực hiện OCR trên cùng ảnh mặt trước
-                st.info("🔍 Đang thực hiện OCR...")
-                ocr_result = OCR_img(front_img)
-                results['ocr_text'] = ocr_result
-                
-                st.success("✅ Hoàn thành OCR!")
-                st.text_area("Kết quả OCR:", '\n'.join(ocr_result), height=200)
+                # Kiểm tra phương thức OCR
+                if ocr_method == "Object Detection + OCR" and detection_model is not None:
+                    st.info("🔍 Đang thực hiện Object Detection + OCR...")
+                    try:
+                        detected_info, img_with_boxes = OCR_with_detection(
+                            front_img, 
+                            detection_model, 
+                            class_names
+                        )
+                        results['detected_info'] = detected_info
+                        
+                        st.success("✅ Hoàn thành Object Detection + OCR!")
+                        
+                        # Hiển thị kết quả theo từng trường
+                        st.markdown("### 📋 Thông tin đã detect:")
+                        for field_name, text_value in detected_info.items():
+                            st.markdown(f"**{field_name}:** {text_value}")
+                        
+                        # Hiển thị bảng thông tin
+                        df_data = [{'Trường': k, 'Giá trị': v} for k, v in detected_info.items()]
+                        if df_data:
+                            df = pd.DataFrame(df_data)
+                            st.dataframe(df, use_container_width=True, hide_index=True)
+                    except ValueError as ve:
+                        st.error(str(ve))
+                    except Exception as e:
+                        st.error(f"❌ Lỗi khi thực hiện Object Detection: {e}")
+                        st.warning("💡 Vui lòng thử lại hoặc chọn 'OCR trực tiếp'")
+                else:
+                    st.info("�🔍 Đang thực hiện OCR...")
+                    ocr_result = OCR_img(front_img)
+                    results['ocr_text'] = ocr_result
+                    
+                    st.success("✅ Hoàn thành OCR!")
+                    st.text_area("Kết quả OCR:", '\n'.join(ocr_result), height=200)
         else:
             st.error("❌ Cần ảnh mặt trước để quét QR code!")
     
@@ -363,7 +443,56 @@ def main():
         )
         
         st.markdown("---")
-        st.markdown("### 📋 Hướng dẫn:")
+        
+        # Chọn phương thức OCR
+        ocr_method = st.radio(
+            "🔍 Phương thức OCR:",
+            options=["OCR trực tiếp", "Object Detection + OCR"],
+            help="Object Detection sẽ detect các trường thông tin trước khi OCR"
+        )
+        
+        # Nếu chọn Object Detection, cho phép chọn mô hình
+        selected_model = None
+        if ocr_method == "Object Detection + OCR":
+            model_options = ["yolov8", "yolov11"]
+            selected_model = st.selectbox(
+                "🤖 Chọn mô hình Detection:",
+                options=model_options,
+                help="Chọn mô hình YOLO để detect các trường thông tin"
+            )
+            
+            # Load model vào session state để tránh reload nhiều lần
+            if 'detection_model' not in st.session_state or st.session_state.get('model_name') != selected_model:
+                with st.spinner(f"Đang load mô hình {selected_model}..."):
+                    try:
+                        st.session_state.detection_model = get_model(model_name=selected_model, device='cpu')
+                        st.session_state.model_name = selected_model
+                        st.session_state.class_names = get_class()
+                        st.success(f"✅ Đã load mô hình {selected_model}!")
+                    except Exception as e:
+                        st.error(f"❌ Lỗi khi load mô hình: {e}")
+                        selected_model = None
+        
+        st.markdown("---")
+        st.markdown("### � Hướng dẫn chụp ảnh CCCD:")
+        st.info("""
+        ✅ **Yêu cầu chất lượng ảnh:**
+        
+        • 📐 Chụp **trực diện** CCCD, không bị nghiêng
+        
+        • 🖼️ CCCD nằm **đầy đủ** trong khung ảnh
+        
+        • 📏 Không chụp quá nhỏ hoặc quá xa
+        
+        • 💡 Ánh sáng **đủ sáng**, không quá chói/tối
+        
+        • 🔍 Ảnh **rõ nét**, không bị mờ
+        
+        • ✨ Tránh phản chiếu ánh sáng lên thẻ
+        """)
+        
+        st.markdown("---")
+        st.markdown("### 📋 Quy trình xử lý:")
         if input_method == "📁 Upload file":
             if cccd_type == "CCCD Mới":
                 st.markdown("""
@@ -392,12 +521,15 @@ def main():
                 """)
         
         st.markdown("---")
-        st.markdown("### ⚙️ Cải tiến:")
+        st.markdown("### 🔧 Tính năng:")
         st.markdown("""
-        - 🔄 Thử 3 scale khác nhau (1→2→3) để quét QR
-        - 📤 Upload file hoặc chụp camera
-        - 📸 Chụp trực tiếp từ camera
-        - 🎯 Xử lý thông minh theo loại CCCD
+        - � Quét QR code tự động (3 scale)
+        - 📝 OCR văn bản tiếng Việt
+        - 🎯 Object Detection + OCR (YOLO)
+        - ✅ Validation thông tin bắt buộc
+        - 🌐 Tên trường tiếng Việt
+        - 📸 Upload file / Camera
+        - 💡 Hướng dẫn chi tiết
         """)
     
     # Main content
@@ -491,7 +623,21 @@ def main():
                 
                 # Xử lý ảnh
                 with st.spinner("Đang xử lý..."):
-                    results = process_images_from_source(front_source, back_source, cccd_type)
+                    # Chuẩn bị tham số cho object detection
+                    detection_model = None
+                    class_names = None
+                    if ocr_method == "Object Detection + OCR":
+                        detection_model = st.session_state.get('detection_model')
+                        class_names = st.session_state.get('class_names')
+                    
+                    results = process_images_from_source(
+                        front_source, 
+                        back_source, 
+                        cccd_type, 
+                        ocr_method=ocr_method,
+                        detection_model=detection_model,
+                        class_names=class_names
+                    )
     
     with col2:
         st.header("ℹ️ Thông tin")
@@ -516,11 +662,32 @@ def main():
         st.markdown("""
         - ✅ Quét QR code tự động với 3 scale
         - ✅ OCR văn bản tiếng Việt
+        - ✅ Object Detection + OCR (YOLO)
+        - 🎯 Mapping thông tin theo trường
         - ✅ Hỗ trợ CCCD mới và cũ
         - ✅ Upload file hoặc chụp camera
         - 📸 Chụp trực tiếp từ camera
         - ✅ Giao diện thân thiện
         """)
+        
+        if ocr_method == "Object Detection + OCR":
+            from utils.model_inference import get_class_vietnamese, get_required_fields, get_optional_fields
+            st.markdown("---")
+            st.markdown("### 📦 Các trường trích xuất:")
+            
+            vn_labels = get_class_vietnamese()
+            required = get_required_fields()
+            optional = get_optional_fields()
+            
+            st.markdown("**Bắt buộc:**")
+            for en_key, vn_label in vn_labels.items():
+                if en_key in required:
+                    st.markdown(f"• ⭐ {vn_label}")
+            
+            st.markdown("\n**Tùy chọn:**")
+            for en_key, vn_label in vn_labels.items():
+                if en_key in optional:
+                    st.markdown(f"• {vn_label}")
 
 if __name__ == "__main__":
     main()
